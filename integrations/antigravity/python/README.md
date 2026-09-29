@@ -75,11 +75,11 @@ on this point.)
 
 | Antigravity `Step` / signal | AG-UI event(s) |
 |---|---|
-| `run()` entry | `RUN_STARTED` |
+| `run()` entry | `RUN_STARTED`, declaring `protocolVersion: "1.0"` |
 | first `content_delta` on a step | `TEXT_MESSAGE_START` |
 | subsequent `content_delta` | `TEXT_MESSAGE_CONTENT` (the delta, not `content`) |
 | same step reaches `DONE` | `TEXT_MESSAGE_END` |
-| `thinking_delta` | `THINKING_TEXT_MESSAGE_*` |
+| `thinking_delta` | `REASONING_START`, `REASONING_MESSAGE_*`, `REASONING_END` (one id per span) |
 | `TOOL_CALL` (built-in / MCP) | `TOOL_CALL_START` / `ARGS` / `END` / `RESULT` |
 | `start_subagent` | `STEP_STARTED` / `STEP_FINISHED` around the delegated work |
 | `FINISH.structured_output` | `STATE_SNAPSHOT` (or `CUSTOM`) |

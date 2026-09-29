@@ -9,7 +9,7 @@ re-order, so the translator is a straight per-step state machine.
 Two rules drive the shape of this file:
 
 * AG-UI requires strict bookending -- a TEXT_MESSAGE_START must be closed by a
-  TEXT_MESSAGE_END before any tool-call event opens, and likewise for thinking.
+  TEXT_MESSAGE_END before any tool-call event opens, and likewise for reasoning.
   ``_close_open_blocks`` is called at every transition.
 * Steps whose ``source`` is USER are the harness echoing our own prompt back.
   They must never be translated, or the user's message would be replayed as an
@@ -32,11 +32,11 @@ from ag_ui.core import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
-    ThinkingEndEvent,
-    ThinkingStartEvent,
-    ThinkingTextMessageContentEvent,
-    ThinkingTextMessageEndEvent,
-    ThinkingTextMessageStartEvent,
+    ReasoningEndEvent,
+    ReasoningMessageContentEvent,
+    ReasoningMessageEndEvent,
+    ReasoningMessageStartEvent,
+    ReasoningStartEvent,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
@@ -101,7 +101,8 @@ class EventTranslator:
         self._message_ids: dict[str, str] = {}
         self._open_text: Optional[str] = None      # message_id of open text block
         self._open_text_key: Optional[str] = None
-        self._open_thinking: bool = False
+        # message_id of the open reasoning span, which also ids its one message.
+        self._open_reasoning: Optional[str] = None
         # Antigravity tool-call identity -> AG-UI tool_call_id.
         self._tool_call_ids: dict[str, str] = {}
         self._open_tool_calls: set[str] = set()
@@ -155,16 +156,19 @@ class EventTranslator:
             self._message_ids[key] = str(uuid.uuid4())
         return self._message_ids[key]
 
-    async def _close_open_thinking(self) -> AsyncGenerator[BaseEvent, None]:
-        """Closes an open thinking block, leaving any text message open."""
-        if self._open_thinking:
-            yield ThinkingTextMessageEndEvent(type="THINKING_TEXT_MESSAGE_END")
-            yield ThinkingEndEvent(type="THINKING_END")
-            self._open_thinking = False
+    async def _close_open_reasoning(self) -> AsyncGenerator[BaseEvent, None]:
+        """Closes an open reasoning span, leaving any text message open."""
+        if self._open_reasoning is not None:
+            message_id = self._open_reasoning
+            yield ReasoningMessageEndEvent(
+                type="REASONING_MESSAGE_END", message_id=message_id
+            )
+            yield ReasoningEndEvent(type="REASONING_END", message_id=message_id)
+            self._open_reasoning = None
 
     async def _close_open_blocks(self) -> AsyncGenerator[BaseEvent, None]:
-        """Closes any open text/thinking block. Must run before other events."""
-        async for event in self._close_open_thinking():
+        """Closes any open text/reasoning block. Must run before other events."""
+        async for event in self._close_open_reasoning():
             yield event
         if self._open_text is not None:
             yield TextMessageEndEvent(
@@ -226,7 +230,7 @@ class EventTranslator:
         if not already_done and (
             step.type == ag_types.StepType.THINKING or step.thinking_delta
         ):
-            async for event in self._translate_thinking(step):
+            async for event in self._translate_reasoning(step):
                 yield event
 
         if step.content_delta and not already_done:
@@ -258,7 +262,7 @@ class EventTranslator:
     # Per-kind translation
     # ------------------------------------------------------------------
 
-    async def _translate_thinking(
+    async def _translate_reasoning(
         self, step: ag_types.Step
     ) -> AsyncGenerator[BaseEvent, None]:
         if not step.thinking_delta:
@@ -270,24 +274,30 @@ class EventTranslator:
             self._message_ids.pop(self._open_text_key, None)
             self._open_text = None
             self._open_text_key = None
-        if not self._open_thinking:
-            # THINKING_START must bracket the message events: the client's
-            # verifyEvents rejects a THINKING_TEXT_MESSAGE_START with no
-            # thinking step in progress, which aborts the whole run.
-            yield ThinkingStartEvent(type="THINKING_START")
-            yield ThinkingTextMessageStartEvent(type="THINKING_TEXT_MESSAGE_START")
-            self._open_thinking = True
-        yield ThinkingTextMessageContentEvent(
-            type="THINKING_TEXT_MESSAGE_CONTENT", delta=step.thinking_delta
+        if self._open_reasoning is None:
+            # REASONING_START must bracket the message events: the client's
+            # verifyEvents rejects a REASONING_MESSAGE_START with no reasoning
+            # span in progress, which aborts the whole run. The span and its
+            # one message share an id, as the other AG-UI integrations emit.
+            message_id = str(uuid.uuid4())
+            yield ReasoningStartEvent(type="REASONING_START", message_id=message_id)
+            yield ReasoningMessageStartEvent(
+                type="REASONING_MESSAGE_START",
+                message_id=message_id,
+                role="reasoning",
+            )
+            self._open_reasoning = message_id
+        yield ReasoningMessageContentEvent(
+            type="REASONING_MESSAGE_CONTENT",
+            message_id=self._open_reasoning,
+            delta=step.thinking_delta,
         )
 
     async def _translate_text(
         self, step: ag_types.Step
     ) -> AsyncGenerator[BaseEvent, None]:
-        if self._open_thinking:
-            yield ThinkingTextMessageEndEvent(type="THINKING_TEXT_MESSAGE_END")
-            yield ThinkingEndEvent(type="THINKING_END")
-            self._open_thinking = False
+        async for event in self._close_open_reasoning():
+            yield event
 
         message_id = self._message_id_for(step)
         if self._open_text is not None and self._open_text != message_id:
@@ -380,12 +390,12 @@ class EventTranslator:
                 # TOOL_CALL_END -- after which nothing clears it again and the
                 # indicator spins long after the answer has landed.
                 #
-                # Only the thinking block has to close: THINKING_* is its own
+                # Only the reasoning span has to close: REASONING_* is its own
                 # bracketed region, and leaving it open around a tool call
                 # would nest two brackets. The verifier tracks messages and
                 # tool calls in separate maps, so an open TEXT_MESSAGE does not
                 # block TOOL_CALL_START.
-                async for event in self._close_open_thinking():
+                async for event in self._close_open_reasoning():
                     yield event
                 yield ToolCallStartEvent(
                     type="TOOL_CALL_START",

@@ -45,6 +45,11 @@ from .ui_bridge import UIBridge
 
 logger = logging.getLogger(__name__)
 
+# The AG-UI protocol version this adapter speaks, declared on every RUN_STARTED.
+# It is this producer's own version, never an echo of the input's: the pair is
+# the whole negotiation, so a consumer sees a downgrade as soon as it happens.
+PROTOCOL_VERSION = "1.0"
+
 
 def _is_harness_lost(exc: BaseException) -> bool:
     """True when the failure means this conversation's harness process is gone.
@@ -391,9 +396,13 @@ class AntigravityAgent:
         """Executes one AG-UI run and yields protocol events."""
         thread_id = input_data.thread_id
         run_id = input_data.run_id
+        _warn_on_newer_protocol(getattr(input_data, "protocol_version", None))
 
         yield RunStartedEvent(
-            type="RUN_STARTED", thread_id=thread_id, run_id=run_id
+            type="RUN_STARTED",
+            thread_id=thread_id,
+            run_id=run_id,
+            protocol_version=PROTOCOL_VERSION,
         )
 
         terminal_sent = False
@@ -741,7 +750,8 @@ class AntigravityAgent:
             tool_call_id = getattr(message, "tool_call_id", None)
             if not tool_call_id:
                 continue
-            if bridge.resolve_tool_call(tool_call_id, getattr(message, "content", "")):
+            content = _tool_result_value(getattr(message, "content", ""))
+            if bridge.resolve_tool_call(tool_call_id, content):
                 resolved = True
             else:
                 # Clients legitimately resend whole transcripts, so old
@@ -863,6 +873,53 @@ def _stale_failure_error(failure: BaseException) -> RunErrorEvent:
         ),
         code="AGENT_ERROR",
     )
+
+
+def _warn_on_newer_protocol(declared: Optional[str]) -> None:
+    """Warns when a consumer declares a protocol this adapter does not speak.
+
+    The run is served either way. A newer minor of the 1.x line is serveable by
+    construction, and a declaration the adapter cannot read is handled like a
+    newer one: proceed, and say so.
+    """
+    if not declared:
+        return
+    try:
+        declared_parts = tuple(int(part) for part in declared.split("."))
+        ours = tuple(int(part) for part in PROTOCOL_VERSION.split("."))
+    except ValueError:
+        logger.warning(
+            "Consumer declared an unreadable AG-UI protocol version %r; "
+            "serving the run as %s.",
+            declared,
+            PROTOCOL_VERSION,
+        )
+        return
+    if declared_parts > ours:
+        logger.warning(
+            "Consumer declared AG-UI protocol %s, newer than this adapter's %s; "
+            "serving the run as %s.",
+            declared,
+            PROTOCOL_VERSION,
+            PROTOCOL_VERSION,
+        )
+
+
+def _tool_result_value(content: Any) -> Any:
+    """The value a frontend tool returns to the model, from a ToolMessage.
+
+    AG-UI 1.0 lets ``ToolMessage.content`` be a list of content parts as well
+    as a string. The harness hands the value to the model as the tool's
+    result, so a list of part objects would reach it as their repr. Text parts
+    are joined; a string passes through unchanged, whitespace included.
+    """
+    if isinstance(content, list):
+        return "\n".join(
+            part.text
+            for part in content
+            if isinstance(getattr(part, "text", None), str)
+        )
+    return content
 
 
 def _message_text(content: Any) -> str:

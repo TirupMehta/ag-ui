@@ -1902,3 +1902,93 @@ class TestSharedStateThroughTheRun:
         snapshots = [e.snapshot for e in events if e.type == "STATE_SNAPSHOT"]
         assert snapshots == [{"delegations": ["critique"]}]
         assert bridge.state == {"delegations": ["critique"]}
+
+
+class TestProtocolVersion:
+    """AG-UI 1.0 version negotiation: the producer states its own version."""
+
+    async def test_run_started_declares_protocol_1_0(self):
+        agent = AntigravityAgent()
+        session = make_session(FakeConversation([[text_step("hi", done=True)]]))
+        agent._sessions.get_or_create = _fixed_session(session)
+        events = await drain(agent.run(run_input()))
+        assert events[0].type == "RUN_STARTED"
+        assert events[0].protocol_version == "1.0"
+
+    async def test_its_own_version_not_an_echo_of_the_input(self):
+        agent = AntigravityAgent()
+        session = make_session(FakeConversation([[text_step("hi", done=True)]]))
+        agent._sessions.get_or_create = _fixed_session(session)
+        events = await drain(agent.run(run_input(protocol_version="1.3")))
+        assert events[0].protocol_version == "1.0"
+
+    async def test_a_newer_minor_is_served_with_a_warning(self, caplog):
+        agent = AntigravityAgent()
+        session = make_session(FakeConversation([[text_step("hi", done=True)]]))
+        agent._sessions.get_or_create = _fixed_session(session)
+        with caplog.at_level("WARNING", logger="ag_ui_antigravity.agent"):
+            events = await drain(agent.run(run_input(protocol_version="1.3")))
+        assert events[-1].type == "RUN_FINISHED"
+        assert "newer than this adapter's 1.0" in caplog.text
+
+    async def test_the_same_version_is_not_warned_about(self, caplog):
+        agent = AntigravityAgent()
+        session = make_session(FakeConversation([[text_step("hi", done=True)]]))
+        agent._sessions.get_or_create = _fixed_session(session)
+        with caplog.at_level("WARNING", logger="ag_ui_antigravity.agent"):
+            await drain(agent.run(run_input(protocol_version="1.0")))
+        assert "protocol" not in caplog.text
+
+
+class TestContentPartToolResults:
+    """AG-UI 1.0 lets ToolMessage.content be a list of content parts."""
+
+    async def test_text_parts_reach_the_parked_tool_as_text(self):
+        from ag_ui.core import TextPart
+
+        agent = AntigravityAgent()
+        bridge, tool_def, tool = _frontend_tool_bridge()
+        parked = asyncio.create_task(tool())
+        await asyncio.sleep(0.05)
+        tool_call_id = _tool_call_id(bridge.drain())
+
+        conversation = FakeConversation([[text_step("ok", done=True)]])
+        session = make_session(conversation, bridge, forwarded={"m1"})
+        await drain(
+            agent._run_locked(
+                session,
+                run_input(
+                    tools=[tool_def],
+                    messages=[
+                        UserMessage(id="m1", role="user", content="hi"),
+                        ToolMessage(
+                            id="m2",
+                            role="tool",
+                            tool_call_id=tool_call_id,
+                            content=[TextPart(text="dark"), TextPart(text="mode")],
+                        ),
+                    ],
+                ),
+            )
+        )
+        assert await asyncio.wait_for(parked, 1) == "dark\nmode"
+
+    async def test_a_string_result_passes_through_unchanged(self):
+        agent = AntigravityAgent()
+        bridge, tool_def, tool = _frontend_tool_bridge()
+        parked = asyncio.create_task(tool())
+        await asyncio.sleep(0.05)
+        tool_call_id = _tool_call_id(bridge.drain())
+
+        conversation = FakeConversation([[text_step("ok", done=True)]])
+        session = make_session(conversation, bridge, forwarded={"m1"})
+        await drain(
+            agent._run_locked(
+                session,
+                run_input(
+                    tools=[tool_def],
+                    messages=_resume_messages(tool_call_id, content="  spaced  "),
+                ),
+            )
+        )
+        assert await asyncio.wait_for(parked, 1) == "  spaced  "

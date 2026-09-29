@@ -122,11 +122,11 @@ class TestThinking:
             ],
         )
         assert types_of(events) == [
-            "THINKING_START",
-            "THINKING_TEXT_MESSAGE_START",
-            "THINKING_TEXT_MESSAGE_CONTENT",
-            "THINKING_TEXT_MESSAGE_END",
-            "THINKING_END",
+            "REASONING_START",
+            "REASONING_MESSAGE_START",
+            "REASONING_MESSAGE_CONTENT",
+            "REASONING_MESSAGE_END",
+            "REASONING_END",
             "TEXT_MESSAGE_START",
             "TEXT_MESSAGE_CONTENT",
             "TEXT_MESSAGE_END",
@@ -143,12 +143,12 @@ class TestThinking:
             ],
         )
         assert types_of(events) == [
-            "THINKING_START",
-            "THINKING_TEXT_MESSAGE_START",
-            "THINKING_TEXT_MESSAGE_CONTENT",
-            "THINKING_TEXT_MESSAGE_CONTENT",
-            "THINKING_TEXT_MESSAGE_END",
-            "THINKING_END",
+            "REASONING_START",
+            "REASONING_MESSAGE_START",
+            "REASONING_MESSAGE_CONTENT",
+            "REASONING_MESSAGE_CONTENT",
+            "REASONING_MESSAGE_END",
+            "REASONING_END",
         ]
 
     async def test_thinking_after_text_closes_the_text_block_first(self):
@@ -162,7 +162,7 @@ class TestThinking:
         )
         order = types_of(events)
         assert order.index("TEXT_MESSAGE_END") < order.index(
-            "THINKING_TEXT_MESSAGE_START"
+            "REASONING_MESSAGE_START"
         )
 
     async def test_reopened_text_after_thinking_gets_a_fresh_message_id(self):
@@ -191,8 +191,8 @@ class TestThinking:
             t, [step(type=ag_types.StepType.THINKING, thinking_delta="unterminated")]
         )
         assert types_of(events)[-2:] == [
-            "THINKING_TEXT_MESSAGE_END",
-            "THINKING_END",
+            "REASONING_MESSAGE_END",
+            "REASONING_END",
         ]
 
     async def test_a_tool_call_closes_an_open_thinking_block_first(self):
@@ -206,7 +206,7 @@ class TestThinking:
             ],
         )
         order = types_of(events)
-        assert order.index("THINKING_TEXT_MESSAGE_END") < order.index("TOOL_CALL_START")
+        assert order.index("REASONING_MESSAGE_END") < order.index("TOOL_CALL_START")
 
 
 class TestToolCalls:
@@ -249,7 +249,7 @@ class TestToolCalls:
         )
 
     async def test_a_tool_call_still_closes_an_open_thinking_block(self):
-        """THINKING_* is its own bracketed region and must not wrap the call."""
+        """REASONING_* is its own bracketed region and must not wrap the call."""
         t = EventTranslator()
         call = ag_types.ToolCall(name="view_file", args={"path": "/tmp/x"}, id="tc-1")
         events = await collect(
@@ -260,7 +260,7 @@ class TestToolCalls:
             ],
         )
         order = types_of(events)
-        assert order.index("THINKING_END") < order.index("TOOL_CALL_START")
+        assert order.index("REASONING_END") < order.index("TOOL_CALL_START")
 
     async def test_args_are_not_re_emitted_across_step_repeats(self):
         t = EventTranslator()
@@ -801,10 +801,10 @@ class TestSubagentRedelivery:
         assert types_of(events) == ["STEP_STARTED", "STEP_FINISHED"]
 
 
-class TestThinkingBracketing:
+class TestReasoningBracketing:
     """@ag-ui/client's verifyEvents is unconditionally in AbstractAgent's
-    pipeline and rejects a THINKING_TEXT_MESSAGE_START with no thinking step in
-    progress -- which aborts the entire run, not just the thinking block."""
+    pipeline and rejects a REASONING_MESSAGE_START with no reasoning span in
+    progress -- which aborts the entire run, not just the reasoning block."""
 
     def _thinking(self, delta, **kw):
         return step(type=ag_types.StepType.THINKING, thinking_delta=delta, **kw)
@@ -813,12 +813,12 @@ class TestThinkingBracketing:
         t = EventTranslator()
         events = await collect(t, [self._thinking("hmm"), self._thinking(" ok")])
         assert types_of(events) == [
-            "THINKING_START",
-            "THINKING_TEXT_MESSAGE_START",
-            "THINKING_TEXT_MESSAGE_CONTENT",
-            "THINKING_TEXT_MESSAGE_CONTENT",
-            "THINKING_TEXT_MESSAGE_END",
-            "THINKING_END",
+            "REASONING_START",
+            "REASONING_MESSAGE_START",
+            "REASONING_MESSAGE_CONTENT",
+            "REASONING_MESSAGE_CONTENT",
+            "REASONING_MESSAGE_END",
+            "REASONING_END",
         ]
 
     async def test_a_tool_call_closes_the_thinking_step_first(self):
@@ -828,8 +828,8 @@ class TestThinkingBracketing:
             t, [self._thinking("plan"), step(step_index=2, tool_calls=[call])]
         )
         order = types_of(events)
-        assert order.index("THINKING_END") < order.index("TOOL_CALL_START")
-        assert order.index("THINKING_TEXT_MESSAGE_END") < order.index("THINKING_END")
+        assert order.index("REASONING_END") < order.index("TOOL_CALL_START")
+        assert order.index("REASONING_MESSAGE_END") < order.index("REASONING_END")
 
     async def test_every_thinking_step_is_balanced(self):
         """Mirrors verifyEvents' state machine: never two STARTs, never an END
@@ -848,13 +848,43 @@ class TestThinkingBracketing:
         )
         depth = 0
         for kind in types_of(events):
-            if kind == "THINKING_START":
-                assert depth == 0, "nested THINKING_START"
+            if kind == "REASONING_START":
+                assert depth == 0, "nested REASONING_START"
                 depth += 1
-            elif kind == "THINKING_END":
-                assert depth == 1, "THINKING_END without a START"
+            elif kind == "REASONING_END":
+                assert depth == 1, "REASONING_END without a START"
                 depth -= 1
         assert depth == 0, "unclosed thinking step at end of run"
+
+    async def test_a_span_and_its_message_share_one_id(self):
+        """AG-UI 1.0 reasoning events all carry a message_id, and the client
+        folds the content into the message that START named."""
+        t = EventTranslator()
+        events = await collect(t, [self._thinking("a"), self._thinking("b")])
+        ids = {event.message_id for event in events}
+        assert len(ids) == 1
+        (only,) = ids
+        assert only
+        start = next(e for e in events if types_of([e]) == ["REASONING_MESSAGE_START"])
+        assert start.role == "reasoning"
+
+    async def test_each_span_gets_a_fresh_id(self):
+        """A span closed by text or a tool call is finished; reopening under the
+        same id would append to a message the client has already sealed."""
+        t = EventTranslator()
+        events = await collect(
+            t,
+            [
+                self._thinking("a"),
+                step(content_delta="answer"),
+                self._thinking("b", step_index=3),
+            ],
+        )
+        span_ids = [
+            e.message_id for e in events if types_of([e]) == ["REASONING_START"]
+        ]
+        assert len(span_ids) == 2
+        assert span_ids[0] != span_ids[1]
 
 
 class TestBuiltinFailures:

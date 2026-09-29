@@ -6,7 +6,7 @@ license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10, <3.15"
 dependencies = [
-    "ag-ui-protocol>=0.1.19",
+    "ag-ui-protocol>=1.0.0,<2.0",
     # The Antigravity SDK ships a platform-specific wheel that bundles the Go
     # "localharness" binary the Python API drives over a WebSocket. Pinned to a
     # minor range: the SDK is young and its surface is still moving.
