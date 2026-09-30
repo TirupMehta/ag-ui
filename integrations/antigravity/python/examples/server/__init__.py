@@ -23,6 +23,7 @@ from .api import (
     agentic_chat,
     backend_tool_rendering,
     human_in_the_loop,
+    shared_state,
     tool_based_generative_ui,
 )
 from .api._common import WORKSPACE
@@ -33,6 +34,7 @@ AGENTS = {
     "human_in_the_loop": human_in_the_loop.agent,
     "tool_based_generative_ui": tool_based_generative_ui.agent,
     "backend_tool_rendering": backend_tool_rendering.agent,
+    "shared_state": shared_state.agent,
 }
 
 app = create_antigravity_app(AGENTS)

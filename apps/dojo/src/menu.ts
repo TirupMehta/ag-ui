@@ -202,6 +202,7 @@ export const menuIntegrations = [
     features: [
       "agentic_chat",
       "human_in_the_loop",
+      "shared_state",
       "tool_based_generative_ui",
       "backend_tool_rendering",
     ],

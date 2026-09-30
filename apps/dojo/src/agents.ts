@@ -163,6 +163,7 @@ export const agentsIntegrations = {
       {
         agentic_chat: "agentic_chat",
         human_in_the_loop: "human_in_the_loop",
+        shared_state: "shared_state",
         tool_based_generative_ui: "tool_based_generative_ui",
         backend_tool_rendering: "backend_tool_rendering",
       },

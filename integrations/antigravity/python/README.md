@@ -504,10 +504,10 @@ Deliberate gaps, so the surface above is not mistaken for more than it is:
   or to tools.
 * **MCP servers** — passed through to the SDK config and covered by the
   approval hook, but not exercised by a live test.
-* **`predictive_state_updates` / `shared_state`** dojo features — the state
-  plumbing exists (`STATE_SNAPSHOT` from `structured_output` and from
-  `set_state()`) but no demo agent is wired for them, so they are not listed in
-  the dojo menu.
+* **`predictive_state_updates`** dojo feature — it streams a tool's
+  arguments into state while the model writes them, and the harness hands over
+  tool calls whole. (`shared_state` is in the menu, backed by
+  `examples/server/api/shared_state.py`.)
 * Subagent bracketing is unit-tested against recorded step shapes, not against
   a live multi-agent run.
 

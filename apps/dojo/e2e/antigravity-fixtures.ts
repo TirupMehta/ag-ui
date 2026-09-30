@@ -114,6 +114,40 @@ export function registerAntigravityFixtures(mockServer: LLMock): void {
     0,
   );
 
+  // Shared state. The recipe is written by the agent's generate_recipe server
+  // tool (set_state -> STATE_SNAPSHOT); reusing the shared recipe keeps the
+  // page's assertions the same as for every other integration.
+  const sharedRecipe = JSON.parse(
+    (
+      sharedResponse("shared-state", "pasta recipe").toolCalls as {
+        arguments: string;
+      }[]
+    )[0].arguments,
+  ).memory.recipe;
+  toolThenText(
+    mockServer,
+    "pasta recipe",
+    {
+      toolCalls: [
+        {
+          name: "generate_recipe",
+          arguments: JSON.stringify({ title: "Pasta al Pomodoro", ...sharedRecipe }),
+        },
+      ],
+    },
+    "Here's a simple pasta al pomodoro — it's in the recipe card now.",
+    0,
+  );
+  // The answer lists what the user added in the UI, so the model reads the
+  // state first through the adapter's built-in get_shared_state tool.
+  toolThenText(
+    mockServer,
+    "the ingredients",
+    { toolCalls: [{ name: "get_shared_state", arguments: "{}" }] },
+    sharedResponse("shared-state", "the ingredients").content as string,
+    0,
+  );
+
   // Tool-based generative UI: two haikus in one thread (0/2, then 3/5).
   toolThenText(
     mockServer,
