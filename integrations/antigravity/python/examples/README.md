@@ -19,18 +19,16 @@ export GEMINI_API_KEY=...
 uv run dev
 ```
 
-…or against **hosted OpenAI**, via the auth-injecting shim in this package:
+…or against **aimock** or another Gemini-compatible server. The harness insists
+on a key, but aimock ignores its value, and `AIMOCK_CONTEXT` picks the fixture
+set:
 
 ```bash
-export OPENAI_API_KEY=...
-export ANTIGRAVITY_USE_OPENAI=1
+export GOOGLE_GEMINI_BASE_URL=http://localhost:4010
+export AIMOCK_CONTEXT=<fixture-set>
+export GEMINI_API_KEY=unused
 uv run dev
 ```
-
-The SDK's OpenAI-compatible path targets unauthenticated local servers and has
-no API-key field, so `openai_proxy.py` injects the `Authorization` header and
-normalizes the Gemini-shaped tool schemas OpenAI rejects. Point `base_url` at
-Ollama or LM Studio and you need neither.
 
 The server listens on `PORT` (default **8027**), which is what the dojo expects
 as `ANTIGRAVITY_URL`.

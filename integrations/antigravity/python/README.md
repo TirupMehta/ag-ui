@@ -318,7 +318,7 @@ Almost everything varying per thread — including `workspaces`, so per-thread
 filesystem isolation is unaffected — is per-conversation. Only `save_dir` and
 `env` are process-wide, and they form the pool's partition key.
 
-Measured with 8 concurrent conversations (`gpt-4.1-mini`, one turn each):
+Measured with 8 concurrent conversations, one turn each:
 
 | | pooled (1 process) | one process each |
 |---|---|---|
@@ -408,7 +408,7 @@ If a prompt leads the model to write an absolute path into a tool call — "read
 `/var/folders/0t/pq2_7rn97834lcsvc_qy4t8r0000gn/T/ag-ui-antigravity-wz_4xjbd/notes.txt`"
 — it sometimes reproduces that path wrongly, truncating it or repeating a chunk
 of it. macOS temp directories are ~75 characters of high-entropy text, which is
-about the worst case. Measured on `gpt-4.1-mini`: **0/14 runs failed with a
+about the worst case. Measured: **0/14 runs failed with a
 9-character workspace path, 2/14 with a 75-character one.**
 
 The harness treats the resulting bad path as a fatal
@@ -530,7 +530,3 @@ path, with no proxy in between:
 | `endpoint=GeminiAPIEndpoint(...)` against aimock: text, server-tool round trip, reasoning | pass (reasoning streams as `REASONING_*` events) |
 | Example server against aimock via `GOOGLE_GEMINI_BASE_URL` | pass |
 | `/capabilities` payload against `AgentCapabilitiesSchema` (zod) | valid |
-
-Earlier verification against `gpt-4.1-mini` through an OpenAI shim (since
-removed) also covered the dojo pages in-browser and a multi-tool turn that
-converged in 2 runs, 8/8 trials.
