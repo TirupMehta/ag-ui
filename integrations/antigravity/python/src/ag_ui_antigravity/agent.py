@@ -37,6 +37,7 @@ from google.antigravity import (
     LocalOpenAIAgentConfig,
 )
 from google.antigravity import types as ag_types
+from google.antigravity.models import DEFAULT_IMAGE_GENERATION_MODEL, DEFAULT_MODEL
 
 from .event_translator import EventTranslator, step_failure
 from .harness_pool import HarnessPool, HarnessProcessDied, to_pooled
@@ -150,6 +151,7 @@ class AntigravityAgent:
         model: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        endpoint: Optional[ag_types.ModelEndpoint] = None,
         system_instructions: Optional[str] = None,
         capabilities: Optional[CapabilitiesConfig] = None,
         tools: Optional[Sequence[Callable[..., Any]]] = None,
@@ -187,6 +189,13 @@ class AntigravityAgent:
           api_key: Gemini API key for the native path. Ignored when
             ``base_url`` is set -- the harness' OpenAI path carries no key
             field, so authenticate at the endpoint instead.
+          endpoint: Where the native path sends its model calls, as the SDK's
+            ``GeminiAPIEndpoint`` or ``VertexEndpoint``. Use it to reach a
+            Gemini-compatible server other than Google's, such as a mock or a
+            gateway: ``GeminiAPIEndpoint(base_url=..., http_headers=...)``.
+            Both the text model and the image model are pinned to it, so no
+            model call escapes to the default endpoint. Cannot be combined with
+            ``base_url``.
           tool_approval: Route every non-frontend tool call through an AG-UI
             approval interrupt. Also satisfies the SDK's mandatory safety guard.
           structured_output_as: ``"state"`` (STATE_SNAPSHOT) or ``"custom"``.
@@ -205,9 +214,15 @@ class AntigravityAgent:
             which would run a side-effecting action twice. Turn off if a tool is
             genuinely meant to run more than once within one turn.
         """
+        if endpoint is not None and base_url is not None:
+            raise ValueError(
+                "Pass either base_url (OpenAI-compatible path) or endpoint "
+                "(native Gemini path), not both."
+            )
         self._model = model
         self._base_url = base_url
         self._api_key = api_key
+        self._endpoint = endpoint
         self._system_instructions = system_instructions
         self._capabilities = capabilities
         self._static_tools = list(tools or [])
@@ -378,10 +393,31 @@ class AntigravityAgent:
                 )
             )
         config_kwargs = dict(common)
-        if self._model:
-            config_kwargs["model"] = self._model
-        if self._api_key:
-            config_kwargs["api_key"] = self._api_key
+        if self._endpoint is not None:
+            # Explicit targets for both model types: the SDK fills any missing
+            # type with a default target on Google's endpoint, which would
+            # send image calls elsewhere and demand a GEMINI_API_KEY.
+            endpoint = self._endpoint
+            if self._api_key and isinstance(endpoint, ag_types.GeminiAPIEndpoint):
+                if endpoint.api_key is None:
+                    endpoint = endpoint.model_copy(update={"api_key": self._api_key})
+            config_kwargs["models"] = [
+                ag_types.ModelTarget(
+                    name=self._model or DEFAULT_MODEL,
+                    types=[ag_types.ModelType.TEXT],
+                    endpoint=endpoint,
+                ),
+                ag_types.ModelTarget(
+                    name=DEFAULT_IMAGE_GENERATION_MODEL,
+                    types=[ag_types.ModelType.IMAGE],
+                    endpoint=endpoint,
+                ),
+            ]
+        else:
+            if self._model:
+                config_kwargs["model"] = self._model
+            if self._api_key:
+                config_kwargs["api_key"] = self._api_key
         return Agent(
             _PooledLocalAgentConfig(harness_pool=self._pool, **config_kwargs)
         )

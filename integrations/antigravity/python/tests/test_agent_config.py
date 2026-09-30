@@ -64,6 +64,49 @@ class TestModelSelection:
         assert config.api_key == "secret"
 
 
+class TestEndpoint:
+    def endpoint(self, **kwargs):
+        return ag_types.GeminiAPIEndpoint(
+            base_url="http://mock:4010",
+            http_headers={"X-AIMock-Context": "demo"},
+            **kwargs,
+        )
+
+    def targets(self, config):
+        return {t.types[0]: t for t in config.models}
+
+    async def test_endpoint_stays_on_the_native_gemini_config(self):
+        config, _ = build(AntigravityAgent(endpoint=self.endpoint()))
+        assert not isinstance(config, LocalOpenAIAgentConfig)
+
+    async def test_text_and_image_models_are_pinned_to_the_endpoint(self):
+        # A missing model type is filled with a default target on Google's own
+        # endpoint, which would bypass a mock and demand a GEMINI_API_KEY.
+        config, _ = build(
+            AntigravityAgent(model="gemini-2.5-flash", endpoint=self.endpoint())
+        )
+        targets = self.targets(config)
+        assert set(targets) == {ag_types.ModelType.TEXT, ag_types.ModelType.IMAGE}
+        assert targets[ag_types.ModelType.TEXT].name == "gemini-2.5-flash"
+        for target in targets.values():
+            assert target.endpoint.base_url == "http://mock:4010"
+            assert target.endpoint.http_headers == {"X-AIMock-Context": "demo"}
+
+    async def test_api_key_fills_an_endpoint_without_one(self):
+        config, _ = build(AntigravityAgent(endpoint=self.endpoint(), api_key="k"))
+        assert {t.endpoint.api_key for t in config.models} == {"k"}
+
+    async def test_the_endpoint_own_api_key_wins(self):
+        config, _ = build(
+            AntigravityAgent(endpoint=self.endpoint(api_key="own"), api_key="k")
+        )
+        assert {t.endpoint.api_key for t in config.models} == {"own"}
+
+    async def test_endpoint_and_base_url_are_mutually_exclusive(self):
+        with pytest.raises(ValueError, match="not both"):
+            AntigravityAgent(base_url="http://host:1234", endpoint=self.endpoint())
+
+
 class TestResume:
     async def test_previous_conversation_id_enables_cold_resume(self):
         config, _ = build(
