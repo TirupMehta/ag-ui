@@ -2,11 +2,11 @@
 
 Opt-in -- these start a Go subprocess and spend tokens:
 
-    export OPENAI_API_KEY=...
-    pytest tests/test_live_openai.py -m live
+    export GEMINI_API_KEY=...
+    pytest tests/test_live_gemini.py -m live
 
 They exercise the whole path the dojo uses: FastAPI endpoint -> SSE ->
-AntigravityAgent -> SessionManager -> Antigravity harness -> OpenAI.
+AntigravityAgent -> SessionManager -> Antigravity harness -> Gemini.
 """
 
 from __future__ import annotations
@@ -15,33 +15,20 @@ import asyncio
 import json
 import os
 import shutil
-import sys
 import tempfile
 import uuid
 
 import httpx
 import pytest
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "examples", "server")
-)
+from _live import agent_kwargs, requires_gemini
 
-pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("OPENAI_API_KEY"),
-        reason="OPENAI_API_KEY is required for live tests",
-    ),
-]
-
-MODEL = os.environ.get("ANTIGRAVITY_TEST_MODEL", "gpt-4.1-mini")
+pytestmark = [pytest.mark.live, requires_gemini]
 
 
 @pytest.fixture(scope="module")
-def base_url():
-    from openai_proxy import start_background
-
-    return start_background(port=8955)
+def model_kwargs():
+    return agent_kwargs()
 
 
 @pytest.fixture(scope="module")
@@ -114,12 +101,11 @@ def assert_lifecycle(events):
 
 
 @pytest.mark.asyncio
-async def test_streams_text_and_bookends_the_run(base_url, workspace):
+async def test_streams_text_and_bookends_the_run(model_kwargs, workspace):
     from ag_ui_antigravity import AntigravityAgent
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions="Answer in one short sentence.",
         workspaces=[workspace],
     )
@@ -139,12 +125,11 @@ async def test_streams_text_and_bookends_the_run(base_url, workspace):
 
 
 @pytest.mark.asyncio
-async def test_multi_turn_reuses_the_session_and_keeps_history(base_url, workspace):
+async def test_multi_turn_reuses_the_session_and_keeps_history(model_kwargs, workspace):
     from ag_ui_antigravity import AntigravityAgent
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions="Answer in one short sentence.",
         workspaces=[workspace],
     )
@@ -168,7 +153,7 @@ async def test_multi_turn_reuses_the_session_and_keeps_history(base_url, workspa
 
 
 @pytest.mark.asyncio
-async def test_frontend_tool_parks_then_resumes_across_two_runs(base_url, workspace):
+async def test_frontend_tool_parks_then_resumes_across_two_runs(model_kwargs, workspace):
     """Park on a client-executed tool, resume on the next run -- end to end."""
     from ag_ui_antigravity import AntigravityAgent
 
@@ -178,8 +163,7 @@ async def test_frontend_tool_parks_then_resumes_across_two_runs(base_url, worksp
         "parameters": {"type": "object", "properties": {}, "required": []},
     }
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions=(
             "Always call get_user_favorite_color to answer colour questions. "
             "After it returns, state the colour verbatim in one short sentence."
@@ -232,7 +216,7 @@ async def test_frontend_tool_parks_then_resumes_across_two_runs(base_url, worksp
 
 
 @pytest.mark.asyncio
-async def test_builtin_tool_calls_are_reported(base_url, short_workspace):
+async def test_builtin_tool_calls_are_reported(model_kwargs, short_workspace):
     """Built-in tools are executed by the harness and reported to the client.
 
     Uses `short_workspace`, not the shared `workspace` fixture, and that is
@@ -251,8 +235,7 @@ async def test_builtin_tool_calls_are_reported(base_url, short_workspace):
         handle.write("the magic word is xyzzy\n")
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions=(
             "You have filesystem tools. Use them to answer questions about files."
         ),
@@ -284,13 +267,12 @@ async def test_builtin_tool_calls_are_reported(base_url, short_workspace):
 
 
 @pytest.mark.asyncio
-async def test_sse_endpoint_serves_the_wire_format(base_url, workspace):
+async def test_sse_endpoint_serves_the_wire_format(model_kwargs, workspace):
     """Full HTTP path: FastAPI -> EventSourceResponse -> data: {json}."""
     from ag_ui_antigravity import AntigravityAgent, create_antigravity_app
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions="Answer in one short sentence.",
         workspaces=[workspace],
     )
@@ -325,7 +307,7 @@ async def test_sse_endpoint_serves_the_wire_format(base_url, workspace):
 
 
 @pytest.mark.asyncio
-async def test_server_side_tool_reports_its_result(base_url, workspace):
+async def test_server_side_tool_reports_its_result(model_kwargs, workspace):
     """A backend tool's return value must reach the client.
 
     The harness reports a custom Python tool as a single TOOL_CALL/ACTIVE step
@@ -346,8 +328,7 @@ async def test_server_side_tool_reports_its_result(base_url, workspace):
         return json.dumps({"temperature": 22, "conditions": "Clear sky"})
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         workspaces=[workspace],
         save_dir=os.path.join(workspace, "save"),
         system_instructions=(
@@ -385,7 +366,7 @@ async def test_server_side_tool_reports_its_result(base_url, workspace):
 
 
 @pytest.mark.asyncio
-async def test_cold_resume_rebuilds_the_session_and_keeps_history(base_url, workspace):
+async def test_cold_resume_rebuilds_the_session_and_keeps_history(model_kwargs, workspace):
     """The documented persistence pattern, driven through the adapter.
 
     `persistence.md` is explicit that Antigravity's answer to "come back later"
@@ -412,8 +393,7 @@ async def test_cold_resume_rebuilds_the_session_and_keeps_history(base_url, work
         ).model_dump()
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions="Answer in one short sentence. Remember what you are told.",
         workspaces=[workspace],
     )
@@ -469,7 +449,7 @@ async def test_cold_resume_rebuilds_the_session_and_keeps_history(base_url, work
 
 
 @pytest.mark.asyncio
-async def test_an_evicted_thread_resumes_when_it_returns(base_url, workspace):
+async def test_an_evicted_thread_resumes_when_it_returns(model_kwargs, workspace):
     """A thread that idles out and comes back keeps its history.
 
     The trajectory stays in `save_dir` after the session is swept, so this is
@@ -481,8 +461,7 @@ async def test_an_evicted_thread_resumes_when_it_returns(base_url, workspace):
     from ag_ui_antigravity.session_manager import SessionManager
 
     agent = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **model_kwargs,
         system_instructions="Answer in one short sentence. Remember what you are told.",
         workspaces=[workspace],
         save_dir=os.path.join(workspace, "evict-save"),

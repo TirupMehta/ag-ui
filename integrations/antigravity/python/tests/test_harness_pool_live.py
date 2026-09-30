@@ -23,26 +23,13 @@ that buys is checked here against a real process:
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
-import sys
 
 import pytest
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "examples", "server")
-)
+from _live import agent_kwargs, config_kwargs, requires_gemini
 
-pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("OPENAI_API_KEY"),
-        reason="OPENAI_API_KEY is required for live tests",
-    ),
-]
-
-MODEL = os.environ.get("ANTIGRAVITY_TEST_MODEL", "gpt-4.1-mini")
-SHIM_PORT = int(os.environ.get("ANTIGRAVITY_POOL_TEST_PORT", "8967"))
+pytestmark = [pytest.mark.live, requires_gemini]
 
 
 def harness_pids() -> list:
@@ -50,13 +37,6 @@ def harness_pids() -> list:
         ["pgrep", "-f", "localharness"], capture_output=True, text=True
     )
     return out.stdout.split()
-
-
-@pytest.fixture(scope="module")
-def base_url():
-    from openai_proxy import start_background
-
-    return start_background(port=SHIM_PORT)
 
 
 def make_tool(name: str, value: str):
@@ -69,17 +49,16 @@ def make_tool(name: str, value: str):
 
 
 def build_agent(
-    *, base_url, pool, save_dir, workspace, tools=(), instructions=None, hooks=()
+    *, pool, save_dir, workspace, tools=(), instructions=None, hooks=()
 ):
     """A pooled Agent, built exactly the way the adapter builds one."""
     from google.antigravity import Agent, CapabilitiesConfig
     from google.antigravity.hooks import policy
 
-    from ag_ui_antigravity.agent import _PooledResumableOpenAIConfig
+    from ag_ui_antigravity.agent import _PooledLocalAgentConfig
 
-    config = _PooledResumableOpenAIConfig(
-        model=MODEL,
-        base_url=base_url,
+    config = _PooledLocalAgentConfig(
+        **config_kwargs(),
         harness_pool=pool,
         save_dir=str(save_dir),
         workspaces=[str(workspace)],
@@ -123,7 +102,7 @@ async def pool():
 
 @pytest.mark.asyncio
 async def test_conversations_share_one_process_and_stay_isolated(
-    base_url, pool, tmp_path
+    pool, tmp_path
 ):
     words = {"alpha": "ALPHA_7", "beta": "BETA_8", "gamma": "GAMMA_9"}
     save_dir = tmp_path / "save"
@@ -132,7 +111,6 @@ async def test_conversations_share_one_process_and_stay_isolated(
         workspace = tmp_path / name
         workspace.mkdir()
         agent = build_agent(
-            base_url=base_url,
             pool=pool,
             save_dir=save_dir,
             workspace=workspace,
@@ -181,7 +159,7 @@ async def test_conversations_share_one_process_and_stay_isolated(
 
 
 @pytest.mark.asyncio
-async def test_workspace_stays_per_conversation(base_url, pool, tmp_path):
+async def test_workspace_stays_per_conversation(pool, tmp_path):
     """``workspaces`` rides in HarnessConfig, so pooling must not merge them.
 
     This is the load-bearing claim for multi-tenant sandboxing: if pooling
@@ -199,14 +177,12 @@ async def test_workspace_stays_per_conversation(base_url, pool, tmp_path):
         "List the files in your workspace and report their names. Be brief."
     )
     second = build_agent(
-        base_url=base_url,
         pool=pool,
         save_dir=save_dir,
         workspace=second_ws,
         instructions=instructions,
     )
     first = build_agent(
-        base_url=base_url,
         pool=pool,
         save_dir=save_dir,
         workspace=first_ws,
@@ -237,14 +213,14 @@ async def test_workspace_stays_per_conversation(base_url, pool, tmp_path):
 
 @pytest.mark.asyncio
 async def test_releasing_one_conversation_spares_the_others(
-    base_url, pool, tmp_path
+    pool, tmp_path
 ):
     save_dir = tmp_path / "save"
     keep = build_agent(
-        base_url=base_url, pool=pool, save_dir=save_dir, workspace=tmp_path
+        pool=pool, save_dir=save_dir, workspace=tmp_path
     )
     drop = build_agent(
-        base_url=base_url, pool=pool, save_dir=save_dir, workspace=tmp_path
+        pool=pool, save_dir=save_dir, workspace=tmp_path
     )
     await keep.__aenter__()
     await drop.__aenter__()
@@ -261,7 +237,7 @@ async def test_releasing_one_conversation_spares_the_others(
 
 
 @pytest.mark.asyncio
-async def test_failed_initialization_spares_the_siblings(base_url, pool, tmp_path):
+async def test_failed_initialization_spares_the_siblings(pool, tmp_path):
     """The unpooled path kills the process on init failure; pooling must not.
 
     Doing so would destroy every co-tenant because of one conversation's bad
@@ -269,12 +245,12 @@ async def test_failed_initialization_spares_the_siblings(base_url, pool, tmp_pat
     """
     save_dir = tmp_path / "save"
     healthy = build_agent(
-        base_url=base_url, pool=pool, save_dir=save_dir, workspace=tmp_path
+        pool=pool, save_dir=save_dir, workspace=tmp_path
     )
     await healthy.__aenter__()
     try:
         broken = build_agent(
-            base_url=base_url, pool=pool, save_dir=save_dir, workspace=tmp_path
+            pool=pool, save_dir=save_dir, workspace=tmp_path
         )
         # Force the init exchange to fail without touching the process.
         broken._config.harness_pool  # noqa: B018 - the pool is shared by design
@@ -305,7 +281,7 @@ async def test_failed_initialization_spares_the_siblings(base_url, pool, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_process_death_raises_rather_than_hangs(base_url, pool, tmp_path):
+async def test_process_death_raises_rather_than_hangs(pool, tmp_path):
     """A killed harness must fail its conversations promptly.
 
     Ship-blocker if it hangs: ``SessionManager`` holds a per-session lock across
@@ -315,7 +291,7 @@ async def test_process_death_raises_rather_than_hangs(base_url, pool, tmp_path):
     save_dir = tmp_path / "save"
     agents = [
         build_agent(
-            base_url=base_url, pool=pool, save_dir=save_dir, workspace=tmp_path
+            pool=pool, save_dir=save_dir, workspace=tmp_path
         )
         for _ in range(2)
     ]
@@ -347,7 +323,7 @@ async def test_process_death_raises_rather_than_hangs(base_url, pool, tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_parked_conversation_does_not_block_its_siblings(
-    base_url, pool, tmp_path
+    pool, tmp_path
 ):
     """HITL parking and pooling must compose, or density must drop to 1.
 
@@ -370,7 +346,6 @@ async def test_a_parked_conversation_does_not_block_its_siblings(
         return await never  # parked for the whole test
 
     parker = build_agent(
-        base_url=base_url,
         pool=pool,
         save_dir=save_dir,
         workspace=tmp_path,
@@ -381,14 +356,12 @@ async def test_a_parked_conversation_does_not_block_its_siblings(
         ),
     )
     sibling_a = build_agent(
-        base_url=base_url,
         pool=pool,
         save_dir=save_dir,
         workspace=tmp_path,
         tools=[make_tool("alpha", "ALPHA_7")],
     )
     sibling_b = build_agent(
-        base_url=base_url,
         pool=pool,
         save_dir=save_dir,
         workspace=tmp_path,
@@ -445,7 +418,7 @@ async def test_a_parked_conversation_does_not_block_its_siblings(
 
 @pytest.mark.asyncio
 async def test_cold_resume_rehydrates_history_on_a_pooled_conversation(
-    base_url, pool, tmp_path
+    pool, tmp_path
 ):
     """Resume must work when the conversation lives on a shared process.
 
@@ -456,7 +429,6 @@ async def test_cold_resume_rehydrates_history_on_a_pooled_conversation(
 
     save_dir = tmp_path / "save"
     first = build_agent(
-        base_url=base_url,
         pool=pool,
         save_dir=save_dir,
         workspace=tmp_path,
@@ -473,12 +445,11 @@ async def test_cold_resume_rehydrates_history_on_a_pooled_conversation(
     from google.antigravity import Agent, CapabilitiesConfig
     from google.antigravity.hooks import policy
 
-    from ag_ui_antigravity.agent import _PooledResumableOpenAIConfig
+    from ag_ui_antigravity.agent import _PooledLocalAgentConfig
 
     resumed = Agent(
-        _PooledResumableOpenAIConfig(
-            model=MODEL,
-            base_url=base_url,
+        _PooledLocalAgentConfig(
+            **config_kwargs(),
             harness_pool=pool,
             save_dir=str(save_dir),
             workspaces=[str(tmp_path)],
@@ -499,7 +470,7 @@ async def test_cold_resume_rehydrates_history_on_a_pooled_conversation(
 
 
 @pytest.mark.asyncio
-async def test_adapter_shares_one_process_across_threads(base_url, tmp_path):
+async def test_adapter_shares_one_process_across_threads(tmp_path):
     """End-to-end through ``AntigravityAgent.run()`` -- the path the dojo uses.
 
     Everything above drives the pooled configs directly. This checks the whole
@@ -510,8 +481,7 @@ async def test_adapter_shares_one_process_across_threads(base_url, tmp_path):
     from ag_ui_antigravity import AntigravityAgent
 
     adapter = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **agent_kwargs(),
         save_dir=str(tmp_path / "save"),
         workspaces=[str(tmp_path)],
         system_instructions="Reply with exactly the word PONG.",
@@ -554,7 +524,7 @@ async def test_adapter_shares_one_process_across_threads(base_url, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_churn_leaves_no_harness_processes(base_url, tmp_path):
+async def test_churn_leaves_no_harness_processes(tmp_path):
     """Sessions come and go; processes must not accumulate."""
     from ag_ui_antigravity.harness_pool import HarnessPool
 
@@ -566,7 +536,6 @@ async def test_churn_leaves_no_harness_processes(base_url, tmp_path):
     try:
         for _ in range(6):
             agent = build_agent(
-                base_url=base_url,
                 pool=churn_pool,
                 save_dir=save_dir,
                 workspace=tmp_path,
@@ -585,7 +554,7 @@ async def test_churn_leaves_no_harness_processes(base_url, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_thread_recovers_after_its_harness_dies(base_url, tmp_path):
+async def test_a_thread_recovers_after_its_harness_dies(tmp_path):
     """A crashed harness must not wedge the thread forever.
 
     A conversation is pinned to one process for life, so when that process dies
@@ -605,8 +574,7 @@ async def test_a_thread_recovers_after_its_harness_dies(base_url, tmp_path):
     from ag_ui_antigravity import AntigravityAgent
 
     adapter = AntigravityAgent(
-        model=MODEL,
-        base_url=base_url,
+        **agent_kwargs(),
         save_dir=str(tmp_path / "save"),
         workspaces=[str(tmp_path)],
         system_instructions="Reply with exactly the word PONG.",

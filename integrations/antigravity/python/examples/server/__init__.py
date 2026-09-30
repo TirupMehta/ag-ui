@@ -5,12 +5,12 @@ Against Gemini (the SDK's native path):
     export GEMINI_API_KEY=...
     uv run dev
 
-Against hosted OpenAI (uses the auth-injecting shim in this package):
+Against a Gemini-compatible server such as aimock (the harness insists on a
+key, but aimock ignores its value):
 
-    export OPENAI_API_KEY=...
-    export ANTIGRAVITY_USE_OPENAI=1
-    uv run dev
-"""
+    export GOOGLE_GEMINI_BASE_URL=http://localhost:4010
+    export GEMINI_API_KEY=unused
+    uv run dev"""
 
 from __future__ import annotations
 
@@ -40,10 +40,10 @@ app = create_antigravity_app(AGENTS)
 
 def main() -> None:
     """Starts the demo server."""
-    if not os.getenv("OPENAI_API_KEY") and not os.getenv("GEMINI_API_KEY"):
-        print("⚠️  No model credentials found.")
-        print("   Gemini (default):  export GEMINI_API_KEY=...")
-        print("   OpenAI (via shim): export OPENAI_API_KEY=... ANTIGRAVITY_USE_OPENAI=1")
+    if not os.getenv("GEMINI_API_KEY"):
+        print("⚠️  GEMINI_API_KEY is not set; every model call will fail.")
+        print("   Gemini:  export GEMINI_API_KEY=...")
+        print("   aimock:  export GOOGLE_GEMINI_BASE_URL=http://localhost:4010 GEMINI_API_KEY=unused")
         print()
 
     port = int(os.getenv("PORT", "8027"))

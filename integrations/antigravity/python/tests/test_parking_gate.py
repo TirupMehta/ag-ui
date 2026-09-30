@@ -18,36 +18,21 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import time
 
 import pytest
+from _live import config_kwargs, requires_gemini
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "examples", "server")
-)
-
-pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("OPENAI_API_KEY"),
-        reason="OPENAI_API_KEY is required for live tests",
-    ),
-]
+pytestmark = [pytest.mark.live, requires_gemini]
 
 PARK_SECONDS = float(os.environ.get("PARK_SECONDS", "30"))
 SECRET = "octarine"
-MODEL = os.environ.get("ANTIGRAVITY_TEST_MODEL", "gpt-4.1-mini")
 
 
 @pytest.mark.asyncio
 async def test_harness_survives_a_park_with_no_consumer_attached(tmp_path):
-    from google.antigravity import Agent, CapabilitiesConfig, LocalOpenAIAgentConfig
+    from google.antigravity import Agent, CapabilitiesConfig, LocalAgentConfig
     from google.antigravity.hooks import policy
-
-    from openai_proxy import start_background
-
-    base_url = start_background(port=8966)
 
     parked = asyncio.Event()
     resume: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -61,9 +46,8 @@ async def test_harness_survives_a_park_with_no_consumer_attached(tmp_path):
         parked.set()
         return await resume
 
-    config = LocalOpenAIAgentConfig(
-        model=MODEL,
-        base_url=base_url,
+    config = LocalAgentConfig(
+        **config_kwargs(),
         system_instructions=(
             "You must call the lookup_favorite_color tool to answer. "
             "After it returns, state the color verbatim in one short sentence."

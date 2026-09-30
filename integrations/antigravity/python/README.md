@@ -61,15 +61,43 @@ app = create_antigravity_app({
 })
 ```
 
-### OpenAI-compatible endpoints
+### Custom Gemini endpoints
+
+`endpoint` sends the native path's Gemini requests somewhere other than
+Google's API, such as a gateway or a mock server like
+[aimock](https://github.com/CopilotKit/aimock). It takes the SDK's own endpoint
+types, so headers ride along on every model call the harness makes:
 
 ```python
-agent = AntigravityAgent(model="gpt-4.1-mini", base_url="http://localhost:11434")
+from google.antigravity.types import GeminiAPIEndpoint
+
+agent = AntigravityAgent(
+    model="gemini-3.6-flash",
+    endpoint=GeminiAPIEndpoint(
+        base_url="http://localhost:4010",
+        http_headers={"X-AIMock-Context": "my-app"},
+    ),
+)
 ```
 
+The adapter pins both the text model and the image model to the endpoint, so no
+call falls back to Google's API. The harness still requires a Gemini API key on
+this path, wherever `base_url` points: pass `api_key` (or set `GEMINI_API_KEY`),
+and against a mock any non-empty value works. `VertexEndpoint` works the same
+way for Vertex AI.
+
+### Local OpenAI-compatible servers
+
+```python
+agent = AntigravityAgent(model="gemma3", base_url="http://localhost:11434")
+```
+
+This is the harness's path for unauthenticated local servers such as Ollama or
+LM Studio. It cannot reach hosted OpenAI: see
+[Known gaps](#known-gaps-in-google-antigravity-018019-openai-compatible-path).
 Pass the **root** URL, not `.../v1` — the harness appends
 `/v1/chat/completions` itself. (The SDK's own docstring example is misleading
-on this point.)
+on this point.) `base_url` and `endpoint` are mutually exclusive.
 
 ## Event mapping
 
@@ -400,13 +428,12 @@ These are upstream, not integration bugs. They affect only `base_url` usage:
 
 1. **No API-key field.** `GemmaEndpoint` carries only `base_url`, and the Go
    harness reads no `OPENAI_API_KEY`. The path targets unauthenticated local
-   servers (Ollama, LM Studio). Authenticated endpoints need a proxy that
-   injects the header — see `examples/server/openai_proxy.py`.
+   servers (Ollama, LM Studio), so hosted OpenAI rejects every request.
 2. **Gemini-shaped tool schemas.** Custom-tool schemas are generated with
    `api_option="GEMINI_API"`, emitting proto-style uppercase types (`"STRING"`)
-   that OpenAI rejects. The example proxy normalizes them. Tools registered via
-   `ToolWithSchema` — which is how this integration builds *frontend* tools —
-   pass their schema through untouched and are unaffected.
+   that OpenAI rejects. Tools registered via `ToolWithSchema` — which is how
+   this integration builds *frontend* tools — pass their schema through
+   untouched and are unaffected.
 3. **`session_continuation_mode` dropped.** `LocalOpenAIAgentConfig.create_strategy`
    does not forward it, disabling cold resume. Worked around by
    `_ResumableOpenAIConfig` in `agent.py`.
@@ -453,12 +480,15 @@ uv sync
 uv run pytest          # 239 unit tests; live tests are deselected by default
 ```
 
-The live checks start a real harness subprocess and call a real model:
+The live checks start a real harness subprocess and call Gemini:
 
 ```bash
-export OPENAI_API_KEY=...
+export GEMINI_API_KEY=...
 uv run pytest tests/ -m live
 ```
+
+`ANTIGRAVITY_TEST_MODEL` picks the model (default: the SDK's default model), and
+`GOOGLE_GEMINI_BASE_URL` points the same tests at a Gemini-compatible gateway.
 
 `tests/test_parking_gate.py` is the important one — it re-verifies the Go-side
 no-timeout property the whole HITL design depends on. Raise the park duration
@@ -473,13 +503,17 @@ PARK_SECONDS=180 uv run pytest tests/test_parking_gate.py -m live
 ```bash
 # terminal 1
 cd examples
-ANTIGRAVITY_USE_OPENAI=1 OPENAI_API_KEY=... uv run dev     # serves on :8027
+GEMINI_API_KEY=... uv run dev     # serves on :8027
 
 # terminal 2
 cd apps/dojo && pnpm dev
 ```
 
 `pnpm run-dojo-everything` starts it alongside the other integrations.
+
+To replay aimock fixtures instead of calling Gemini, point the server at aimock.
+The harness insists on a key, but aimock ignores its value:
+`GOOGLE_GEMINI_BASE_URL=http://localhost:4010 AIMOCK_CONTEXT=<fixture-set> GEMINI_API_KEY=unused uv run dev`.
 
 Then open `/antigravity/feature/agentic_chat`.
 

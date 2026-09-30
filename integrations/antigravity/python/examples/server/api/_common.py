@@ -41,20 +41,27 @@ for _name, _body in _SEED.items():
         with open(_path, "w") as _handle:
             _handle.write(_body)
 
-# The SDK's OpenAI-compatible path targets unauthenticated local servers. To
-# demo against hosted OpenAI, set ANTIGRAVITY_USE_OPENAI=1 and the example shim
-# injects the Authorization header (see ../openai_proxy.py).
-USE_OPENAI = os.environ.get("ANTIGRAVITY_USE_OPENAI") == "1"
+MODEL = os.environ.get("ANTIGRAVITY_MODEL")  # None -> the SDK default
 
-if USE_OPENAI:
-    from ..openai_proxy import start_background
+# The demos run on Antigravity's native Gemini path. GOOGLE_GEMINI_BASE_URL
+# sends the same Gemini requests to another Gemini-compatible server instead of
+# Google's, such as aimock for e2e runs. The harness still wants GEMINI_API_KEY
+# set, though aimock ignores its value. AIMOCK_CONTEXT, when set, picks the
+# aimock fixture set.
+GEMINI_BASE_URL = os.environ.get("GOOGLE_GEMINI_BASE_URL")
 
-    BASE_URL = start_background(port=int(os.environ.get("ANTIGRAVITY_SHIM_PORT", 8931)))
-    MODEL = os.environ.get("ANTIGRAVITY_MODEL", "gpt-4.1-mini")
-else:
-    BASE_URL = None
-    MODEL = os.environ.get("ANTIGRAVITY_MODEL")  # None -> the SDK default
 
+def endpoint():
+    """The Gemini endpoint the demos call, or None for Google's own."""
+    if not GEMINI_BASE_URL:
+        return None
+    from google.antigravity.types import GeminiAPIEndpoint
+
+    context = os.environ.get("AIMOCK_CONTEXT")
+    return GeminiAPIEndpoint(
+        base_url=GEMINI_BASE_URL,
+        http_headers={"X-AIMock-Context": context} if context else None,
+    )
 
 def chat_only_capabilities() -> CapabilitiesConfig:
     """Enables no built-in tool except `finish`.
@@ -105,7 +112,7 @@ def build(**kwargs):
 
     defaults = dict(
         model=MODEL,
-        base_url=BASE_URL,
+        endpoint=endpoint(),
         workspaces=[WORKSPACE],
         harness_pool=shared_pool(),
         save_dir=_SHARED_SAVE_DIR,
