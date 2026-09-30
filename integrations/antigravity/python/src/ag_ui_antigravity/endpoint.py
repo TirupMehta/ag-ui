@@ -96,6 +96,17 @@ def default_capabilities(agent: AntigravityAgent) -> Dict[str, Any]:
             "persistentState": True,
         },
         "reasoning": {"supported": True, "streaming": True},
+        # Inline attachments reach the model as SDK media. Remote files do not:
+        # the harness cannot fetch them.
+        "multimodal": {
+            "input": {
+                "image": True,
+                "audio": True,
+                "video": True,
+                "pdf": True,
+                "file": False,
+            }
+        },
         "execution": {
             # The Go harness runs real shell commands on the host -- but only
             # when run_command survives the capability config.

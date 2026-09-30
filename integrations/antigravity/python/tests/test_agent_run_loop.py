@@ -1396,8 +1396,8 @@ class TestMultimodalPrompt:
         assert conversation.sent == ["hello"]
 
     async def test_a_message_with_no_text_parts_does_not_replay_an_older_turn(self):
-        """An image-only message has nothing to send; the run must not fall
-        back to a prompt the harness already has."""
+        """An image the harness cannot fetch becomes a note for the model; the
+        run must not fall back to a prompt the harness already has."""
         from ag_ui.core import ImageInputContent, InputContentUrlSource
 
         agent = AntigravityAgent()
@@ -1426,7 +1426,48 @@ class TestMultimodalPrompt:
                 ),
             )
         )
-        assert conversation.sent == []
+        assert conversation.sent == [
+            "[Attached image was not forwarded: only inline attachments reach "
+            "this agent.]"
+        ]
+
+    async def test_an_inline_image_reaches_the_harness_as_media(self):
+        import base64
+
+        from ag_ui.core import DataSource, ImagePart, TextPart
+        from google.antigravity import types as ag_types
+
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+        agent = AntigravityAgent()
+        conversation = FakeConversation([[text_step("a logo", done=True)]])
+        session = make_session(conversation)
+        await drain(
+            agent._run_locked(
+                session,
+                run_input(
+                    messages=[
+                        UserMessage(
+                            id="m1",
+                            role="user",
+                            content=[
+                                TextPart(type="text", text="what is this?"),
+                                ImagePart(
+                                    type="image",
+                                    source=DataSource(
+                                        type="data",
+                                        value=base64.b64encode(png).decode(),
+                                        mime_type="image/png",
+                                    ),
+                                ),
+                            ],
+                        )
+                    ]
+                ),
+            )
+        )
+        (sent,) = conversation.sent
+        assert sent[0] == "what is this?"
+        assert isinstance(sent[1], ag_types.Image) and sent[1].data == png
 
 
 class TestForcedCloseDuringARun:

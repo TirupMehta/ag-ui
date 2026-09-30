@@ -110,6 +110,16 @@ def get_state() -> Dict[str, Any]:
     return _current_bridge("get_state").state
 
 
+def get_context() -> List[Dict[str, str]]:
+    """Returns a copy of the context the client sent with the current run.
+
+    Call it from a server tool. Each entry is ``{"description": ..., "value":
+    ...}``, as ``RunAgentInput.context`` carries it -- what CopilotKit's
+    ``useAgentContext`` shares with the agent.
+    """
+    return _current_bridge("get_context").context
+
+
 def set_state(state: Dict[str, Any]) -> None:
     """Replaces the current session's shared state and streams it to the client.
 
@@ -160,6 +170,9 @@ class UIBridge:
         # it is set the client has not seen our state yet, so the state it
         # sends back is older than ours and must not overwrite it.
         self._state_undelivered = False
+        # The context the current run arrived with. Unlike state it is not
+        # shared back: the client sends it afresh with every run.
+        self._context: List[Dict[str, str]] = []
 
     def reset_turn(self) -> None:
         """Retires the per-turn frontend-tool claims.
@@ -210,6 +223,27 @@ class UIBridge:
         if self._state_undelivered:
             return
         self._state = copy.deepcopy(state) if isinstance(state, dict) else {}
+
+    @property
+    def context(self) -> List[Dict[str, str]]:
+        """A copy of the context the current run arrived with."""
+        return copy.deepcopy(self._context)
+
+    def adopt_client_context(self, context: Any) -> None:
+        """Takes ``RunAgentInput.context`` as the context server tools see."""
+        entries: List[Dict[str, str]] = []
+        for item in context or []:
+            description = getattr(item, "description", None)
+            value = getattr(item, "value", None)
+            if isinstance(item, dict):
+                description = item.get("description")
+                value = item.get("value")
+            if description is None and value is None:
+                continue
+            entries.append(
+                {"description": description or "", "value": value or ""}
+            )
+        self._context = entries
 
     def replace_state(self, state: Dict[str, Any]) -> None:
         """Replaces the shared state and streams it as a STATE_SNAPSHOT."""
@@ -340,7 +374,9 @@ class UIBridge:
             self._frontend_tool_names.add(tool.name)
         return built
 
-    def build_server_tools(self, tools: Sequence[Callable[..., Any]]) -> List[Any]:
+    def build_server_tools(
+        self, tools: Sequence[Callable[..., Any]], *, silent: bool = False
+    ) -> List[Any]:
         """Wraps server-side tools so their results reach the client.
 
         A custom Python tool is executed by the SDK's own ``ToolRunner``, and the
@@ -358,13 +394,19 @@ class UIBridge:
         Built-in tools are unaffected: the harness *does* re-report those at DONE
         with their output folded into the args, which is what
         ``_extract_builtin_result`` reads.
+
+        ``silent`` tools run the same way but emit nothing: the adapter's own
+        read-only tools, which would otherwise put a card in every chat for a
+        lookup other frameworks do invisibly in the prompt.
         """
         built: List[Any] = []
         for tool in tools:
-            built.append(self._build_server_tool(tool))
+            built.append(self._build_server_tool(tool, silent=silent))
         return built
 
-    def _build_server_tool(self, tool: Callable[..., Any]) -> Callable[..., Any]:
+    def _build_server_tool(
+        self, tool: Callable[..., Any], *, silent: bool = False
+    ) -> Callable[..., Any]:
         bridge = self
         name = getattr(tool, "__name__", "tool")
         is_async = inspect.iscoroutinefunction(tool)
@@ -373,6 +415,15 @@ class UIBridge:
         # the SDK still derives the same tool schema from the original function.
         @functools.wraps(tool)
         async def _invoke(*args: Any, **kwargs: Any) -> Any:
+            if silent:
+                token = _CURRENT_BRIDGE.set(bridge)
+                try:
+                    result = tool(*args, **kwargs)
+                    if is_async or inspect.isawaitable(result):
+                        result = await result
+                    return result
+                finally:
+                    _CURRENT_BRIDGE.reset(token)
             tool_call_id = str(uuid.uuid4())
             bridge.emit(
                 ToolCallStartEvent(

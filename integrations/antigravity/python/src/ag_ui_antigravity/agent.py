@@ -17,6 +17,8 @@ hooks and frontend tools.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import os
 import tempfile
@@ -39,6 +41,7 @@ from google.antigravity import (
 from google.antigravity import types as ag_types
 from google.antigravity.models import DEFAULT_IMAGE_GENERATION_MODEL, DEFAULT_MODEL
 
+from .builtin_tools import get_app_context, get_shared_state
 from .event_translator import EventTranslator, step_failure
 from .harness_pool import HarnessPool, HarnessProcessDied, to_pooled
 from .session_manager import SessionLimitExceeded, SessionManager, tool_signature
@@ -168,6 +171,8 @@ class AntigravityAgent:
         structured_output_as: str = "state",
         emit_builtin_tool_calls: bool = True,
         deduplicate_tool_calls: bool = True,
+        expose_app_context: bool = True,
+        expose_shared_state: bool = True,
         # Session policy
         session_timeout_seconds: int = 1800,
         parked_timeout_seconds: int = 7200,
@@ -206,6 +211,14 @@ class AntigravityAgent:
             ~1 MB per extra idle conversation instead of ~95 MB. The default is
             chosen for blast radius -- one dead process takes every conversation
             on it -- not for memory. Set to 1 for one process per thread.
+          expose_app_context: Give the model a silent ``get_app_context`` tool
+            that returns the run's ``RunAgentInput.context``. Antigravity fixes
+            the instructions per session, so this is how per-run context from
+            ``useAgentContext`` reaches the model.
+          expose_shared_state: Give the model a silent ``get_shared_state`` tool
+            that returns the session's shared state, including edits the user
+            made in the UI. A tool of your own with the same name, or a client
+            tool, takes precedence over either built-in.
           deduplicate_tool_calls: Dispatch a frontend tool to the client at most
             once per Antigravity turn. An identical repeat is answered from the
             cached result; a repeat with different arguments gets a plain
@@ -226,6 +239,8 @@ class AntigravityAgent:
         self._system_instructions = system_instructions
         self._capabilities = capabilities
         self._static_tools = list(tools or [])
+        self._expose_app_context = expose_app_context
+        self._expose_shared_state = expose_shared_state
         self._mcp_servers = list(mcp_servers or [])
         self._subagents = list(subagents or [])
         self._workspaces = list(workspaces) if workspaces else [os.getcwd()]
@@ -342,6 +357,9 @@ class AntigravityAgent:
         tools: List[Any] = bridge.build_server_tools(self._static_tools)
         if self._enable_frontend_tools and input_data.tools:
             tools.extend(bridge.build_frontend_tools(list(input_data.tools)))
+        tools.extend(
+            bridge.build_server_tools(self._read_tools(input_data), silent=True)
+        )
 
         hooks: List[Any] = []
         if self._enable_ask_question:
@@ -511,11 +529,24 @@ class AntigravityAgent:
                 type="RUN_FINISHED", thread_id=thread_id, run_id=run_id
             )
 
+    def _read_tools(self, input_data: RunAgentInput) -> List[Callable[..., Any]]:
+        """The built-in read tools this agent exposes, minus any name clashes."""
+        taken = {getattr(t, "__name__", None) for t in self._static_tools}
+        if self._enable_frontend_tools:
+            taken.update(t.name for t in input_data.tools or [])
+        wanted = []
+        if self._expose_app_context:
+            wanted.append(get_app_context)
+        if self._expose_shared_state:
+            wanted.append(get_shared_state)
+        return [t for t in wanted if t.__name__ not in taken]
+
     async def _run_locked(
         self, session, input_data: RunAgentInput
     ) -> AsyncGenerator[BaseEvent, None]:
         bridge: UIBridge = session.bridge
         bridge.adopt_client_state(input_data.state)
+        bridge.adopt_client_context(input_data.context)
 
         # ---- resolve anything the client answered since the last run ----
         resumed = self._apply_client_answers(bridge, input_data)
@@ -876,7 +907,10 @@ class AntigravityAgent:
         return False
 
     def _extract_prompt(self, input_data: RunAgentInput, session) -> tuple:
-        """Returns ``(text, message_id)`` for the newest unforwarded user turn.
+        """Returns ``(prompt, message_id)`` for the newest unforwarded user turn.
+
+        The prompt is a string, or a list of strings and SDK media when the
+        message carries attachments (see ``_message_prompt``).
 
         Antigravity owns the conversation history in-process while the AG-UI
         client resends the whole transcript every run, so each user message
@@ -893,9 +927,9 @@ class AntigravityAgent:
             if message_id in session.forwarded_prompts:
                 # Everything before this was forwarded on an earlier run.
                 return (None, None)
-            text = _message_text(getattr(message, "content", None))
-            if text:
-                return (text, message_id)
+            prompt = _message_prompt(getattr(message, "content", None))
+            if prompt:
+                return (prompt, message_id)
         return (None, None)
 
 
@@ -958,25 +992,75 @@ def _tool_result_value(content: Any) -> Any:
     return content
 
 
-def _message_text(content: Any) -> str:
-    """Flattens AG-UI message content to the text the harness can accept.
+_MEDIA_PART_TYPES = {"image", "document", "audio", "video"}
 
-    ``UserMessage.content`` is a string or a list of typed parts. Only text
-    survives -- ``conversation.send()`` takes a string -- but ignoring a
-    list-shaped message entirely would silently drop the user's turn, so the
-    text parts are joined and non-text parts are left for a future multimodal
-    mapping.
+
+def _message_prompt(content: Any) -> Any:
+    """Maps AG-UI message content onto what ``conversation.send()`` accepts.
+
+    ``UserMessage.content`` is a string or a list of typed parts. Text-only
+    content stays a plain string. Image, document, audio and video parts whose
+    bytes travel inline (a ``data`` source, or a ``data:`` URL) become the
+    SDK's media objects, in order, alongside the text. The harness cannot fetch
+    anything itself, so a remote URL, a provider file reference, or a MIME type
+    the SDK rejects is replaced by a short note: dropping it silently would
+    leave the model answering as if nothing had been attached.
     """
     if isinstance(content, str):
         return content.strip()
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            text = getattr(part, "text", None)
-            if isinstance(text, str) and text.strip():
+    if not isinstance(content, list):
+        return ""
+    parts: List[Any] = []
+    has_media = False
+    for part in content:
+        kind = getattr(part, "type", None)
+        text = getattr(part, "text", None)
+        if isinstance(text, str):
+            if text.strip():
                 parts.append(text.strip())
+            continue
+        if kind not in _MEDIA_PART_TYPES:
+            continue
+        media, note = _media_from_part(part, kind)
+        if media is not None:
+            parts.append(media)
+            has_media = True
+        else:
+            parts.append(note)
+    if not has_media:
         return "\n".join(parts)
-    return ""
+    return parts
+
+
+def _media_from_part(part: Any, kind: str) -> tuple:
+    """Returns ``(media, None)`` for a forwardable part, else ``(None, note)``."""
+    source = getattr(part, "source", None)
+    metadata = getattr(part, "metadata", None) or {}
+    filename = metadata.get("filename") if isinstance(metadata, dict) else None
+    label = f"Attached {kind}" + (f" {filename!r}" if filename else "")
+    source_type = getattr(source, "type", None)
+    value = getattr(source, "value", None) or ""
+    mime_type = getattr(source, "mime_type", None)
+    try:
+        if source_type == "data":
+            data = base64.b64decode(value, validate=False)
+        elif source_type == "url" and value.startswith("data:"):
+            header, _, encoded = value.partition(",")
+            mime_type = mime_type or header[len("data:"):].split(";")[0]
+            if ";base64" not in header:
+                raise ValueError("only base64 data: URLs are supported")
+            data = base64.b64decode(encoded, validate=False)
+        else:
+            return None, (
+                f"[{label} was not forwarded: only inline attachments reach "
+                "this agent.]"
+            )
+        if not mime_type:
+            raise ValueError("the attachment has no MIME type")
+        return ag_types.from_bytes(data, mime_type, description=filename), None
+    except (ValueError, binascii.Error) as exc:
+        logger.warning("Dropping the %s: %s", label.lower(), exc)
+        return None, f"[{label} could not be read: {exc}]"
 
 
 async def _wait_until_parked(bridge: UIBridge) -> None:

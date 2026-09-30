@@ -259,8 +259,47 @@ A write made while the turn is parked (no run attached) is queued and delivered
 on the next run. Until then the adapter keeps its own copy rather than the
 client's, since the client's copy predates the write.
 
-The model does not see the state: only tools do. Folding `RunAgentInput.state`
-into the prompt is listed under [Not implemented yet](#not-implemented-yet).
+`get_context()` works the same way and returns the run's `RunAgentInput.context`
+(what CopilotKit's `useAgentContext` shares) as a list of
+`{"description", "value"}` entries.
+
+### What the model sees: app context and shared state
+
+Antigravity fixes an agent's instructions when the harness session starts, so
+per-run input cannot be folded into the prompt the way other integrations do.
+Instead the adapter gives every agent two read-only tools the model calls when
+it needs them:
+
+| Tool | Returns |
+|---|---|
+| `get_app_context` | the run's `RunAgentInput.context` |
+| `get_shared_state` | the session's shared state, including the user's edits in the UI |
+
+Both run silently: the client gets no `TOOL_CALL_*` events for them, so no tool
+card appears for what is, elsewhere, an invisible prompt update. Their
+docstrings tell the model to call them whenever the answer may depend on the
+user, the page or the app state; say so in `system_instructions` too when it
+matters. Turn either off with `expose_app_context=False` or
+`expose_shared_state=False`. A server or client tool with the same name takes
+precedence.
+
+The difference from prompt injection is that the model has to ask. A preference
+the user changed in the UI reaches the model on its next call to
+`get_shared_state`, not before.
+
+### Attachments
+
+Image, document, audio and video parts of a user message reach the model when
+their bytes travel inline: a `data` source, or a `data:` URL. They become the
+SDK's `Image`/`Document`/`Audio`/`Video` objects, sent in order with the text.
+The SDK accepts PNG, JPEG, WebP and BMP images and PDF, plain-text, CSV, JSON,
+HTML and XML documents, among others.
+
+The harness cannot fetch anything itself, so an `https://` URL, a provider file
+reference or an unsupported type such as GIF is replaced by a one-line note in
+the prompt (`[Attached image 'x.png' was not forwarded: ...]`). The model then
+says it could not see the file rather than answering as if nothing was attached.
+`/capabilities` advertises `multimodal.input` accordingly.
 
 ### Built-in tools worth disabling
 
@@ -457,13 +496,12 @@ while the tool runs and swaps in the result when it returns.
 
 Deliberate gaps, so the surface above is not mistaken for more than it is:
 
-* **Triggers** (async inbound messages) and **multimodal input** — the SDK
-  supports both; nothing here maps them to AG-UI yet.
+* **Triggers** (async inbound messages) — the SDK supports them; nothing here
+  maps them to AG-UI yet.
 * **`STATE_DELTA`** — structured output and `set_state()` are emitted as whole
   snapshots only.
-* **State and context in the prompt** — `RunAgentInput.state`, `context` and
-  `forwardedProps` reach server tools (state, via `get_state()`) but are not
-  folded into what the model sees.
+* **`forwardedProps`** — apart from interrupt answers, not passed to the model
+  or to tools.
 * **MCP servers** — passed through to the SDK config and covered by the
   approval hook, but not exercised by a live test.
 * **`predictive_state_updates` / `shared_state`** dojo features — the state

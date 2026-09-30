@@ -8,7 +8,7 @@ import pytest
 from ag_ui.core import Tool as AGUITool
 from google.antigravity import types as ag_types
 
-from ag_ui_antigravity.ui_bridge import UIBridge, get_state, set_state
+from ag_ui_antigravity.ui_bridge import UIBridge, get_context, get_state, set_state
 
 
 def make_tool(name="set_theme"):
@@ -883,3 +883,54 @@ class TestSharedState:
         bridge.drain()
         bridge.adopt_client_state({"n": 3})
         assert bridge.state == {"n": 3}
+
+
+class TestContext:
+    """get_context(): the run's RunAgentInput.context, for server tools."""
+
+    async def test_a_server_tool_reads_the_runs_context(self):
+        from ag_ui.core import Context
+
+        bridge = UIBridge()
+        bridge.adopt_client_context(
+            [Context(description="Plan", value="pro"), {"description": "Page", "value": "/billing"}]
+        )
+
+        async def whoami() -> list:
+            """Echoes the context."""
+            return get_context()
+
+        (wrapped,) = bridge.build_server_tools([whoami])
+        assert await wrapped() == [
+            {"description": "Plan", "value": "pro"},
+            {"description": "Page", "value": "/billing"},
+        ]
+
+    def test_each_run_replaces_the_context(self):
+        bridge = UIBridge()
+        bridge.adopt_client_context([{"description": "a", "value": "1"}])
+        bridge.adopt_client_context([])
+        assert bridge.context == []
+
+    def test_the_copy_handed_out_cannot_change_the_bridge(self):
+        bridge = UIBridge()
+        bridge.adopt_client_context([{"description": "a", "value": "1"}])
+        bridge.context.clear()
+        assert bridge.context == [{"description": "a", "value": "1"}]
+
+    def test_get_context_outside_a_server_tool_raises(self):
+        with pytest.raises(RuntimeError, match="get_context"):
+            get_context()
+
+    async def test_a_silent_tool_emits_no_events_but_still_sees_the_session(self):
+        bridge = UIBridge()
+        bridge.adopt_client_state({"x": 1})
+
+        def peek() -> dict:
+            """Reads state."""
+            return get_state()
+
+        (wrapped,) = bridge.build_server_tools([peek], silent=True)
+        assert await wrapped() == {"x": 1}
+        assert bridge.drain() == []
+
