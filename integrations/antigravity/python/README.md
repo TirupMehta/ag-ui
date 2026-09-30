@@ -477,7 +477,7 @@ Deliberate gaps, so the surface above is not mistaken for more than it is:
 
 ```bash
 uv sync
-uv run pytest          # 239 unit tests; live tests are deselected by default
+uv run pytest          # 315 unit tests; live tests are deselected by default
 ```
 
 The live checks start a real harness subprocess and call Gemini:
@@ -519,15 +519,18 @@ Then open `/antigravity/feature/agentic_chat`.
 
 ## Verification status
 
-Verified against `google-antigravity` 0.1.8 and `gpt-4.1-mini` via the example
-shim:
+Verified on 2026-09-30 against `google-antigravity` 0.1.9 on the native Gemini
+path, with no proxy in between:
 
 | Check | Result |
 |---|---|
-| 239 unit tests (translator, bridge, sessions, endpoint) | pass |
-| 6 live tests (streaming, multi-turn, frontend-tool park/resume, built-in tools, SSE, parking gate) | pass |
-| 15 TypeScript tests + typecheck + build | pass |
-| Harness parked with the stream closed, then resumed (manual soak at 45 s and 180 s; the committed default is 30 s) | pass |
-| Dojo `agentic_chat`, `human_in_the_loop`, `tool_based_generative_ui`, `backend_tool_rendering` | pass, in-browser |
-| Multi-tool turn (`"weather in Tokyo? then set the background…"`) converges in 2 runs, 8/8 trials | pass |
+| 315 unit tests (translator, bridge, sessions, endpoint, config) | pass |
+| 19 live tests against Gemini (streaming, multi-turn, frontend-tool park/resume, built-in tools, SSE, server tools, cold resume, pooling) | 15 pass; 4 were cut short by the free-tier key's quota (429) or Gemini overload (503) errors |
+| Harness parked with the stream closed, then resumed | pass in the CopilotKit showcase's human-in-the-loop cells; the 30 s `test_parking_gate.py` soak ran into the quota limit |
+| `endpoint=GeminiAPIEndpoint(...)` against aimock: text, server-tool round trip, reasoning | pass (reasoning streams as `REASONING_*` events) |
+| Example server against aimock via `GOOGLE_GEMINI_BASE_URL` | pass |
 | `/capabilities` payload against `AgentCapabilitiesSchema` (zod) | valid |
+
+Earlier verification against `gpt-4.1-mini` through an OpenAI shim (since
+removed) also covered the dojo pages in-browser and a multi-tool turn that
+converged in 2 runs, 8/8 trials.
