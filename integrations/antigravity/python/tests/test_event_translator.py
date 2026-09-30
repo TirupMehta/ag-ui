@@ -248,6 +248,29 @@ class TestToolCalls:
             "the tool call is orphaned from the message that made it"
         )
 
+    async def test_the_harness_label_on_a_tool_call_step_is_not_assistant_text(self):
+        """The harness narrates its own TOOL_CALL steps ('Calling custom tool
+        "get_weather"'); that label must not reach the chat as a reply."""
+        t = EventTranslator()
+        call = ag_types.ToolCall(name="get_weather", args={"location": "Tokyo"}, id="tc-1")
+        label = 'Calling custom tool "get_weather"'
+        events = await collect(
+            t,
+            [
+                step(content_delta="Let me check.", content="Let me check."),
+                step(
+                    step_index=2,
+                    type=ag_types.StepType.TOOL_CALL,
+                    content_delta=label,
+                    content=label,
+                ),
+                step(step_index=2, type=ag_types.StepType.TOOL_CALL, tool_calls=[call]),
+            ],
+        )
+        text = "".join(e.delta for e in events if e.type == "TEXT_MESSAGE_CONTENT")
+        assert text == "Let me check."
+        assert "TOOL_CALL_START" in types_of(events)
+
     async def test_a_tool_call_still_closes_an_open_thinking_block(self):
         """REASONING_* is its own bracketed region and must not wrap the call."""
         t = EventTranslator()

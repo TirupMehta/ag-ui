@@ -233,7 +233,14 @@ class EventTranslator:
             async for event in self._translate_reasoning(step):
                 yield event
 
-        if step.content_delta and not already_done:
+        # A TOOL_CALL step's text is the harness's own status label
+        # ('Calling custom tool "x"', "List files"), not model output: the
+        # model's narration before a call arrives on a TEXT_RESPONSE step.
+        if (
+            step.content_delta
+            and not already_done
+            and step.type != ag_types.StepType.TOOL_CALL
+        ):
             async for event in self._translate_text(step):
                 yield event
 
