@@ -166,7 +166,9 @@ async def interrupt(
 
     The run ends with ``RUN_FINISHED`` carrying an interrupt outcome whose
     interrupt has this ``reason``, ``message`` and ``metadata`` (plus any extra
-    fields, which AG-UI's ``Interrupt`` allows at the top level). A later run
+    fields, which AG-UI's ``Interrupt`` allows at the top level). Put anything
+    the UI needs in ``metadata``: a relaying runtime such as CopilotKit's keeps
+    only the protocol's own interrupt fields and drops the extras. A later run
     answers it with a ``RunAgentInput.resume`` entry; its payload comes back
     unchanged. The tool keeps running from here, inside the same harness turn.
 

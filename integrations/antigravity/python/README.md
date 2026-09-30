@@ -203,7 +203,9 @@ async def schedule_meeting(topic: str, attendee: str) -> str:
 The run ends with `RUN_FINISHED` carrying an interrupt outcome whose interrupt
 has that `reason`, `message` and `metadata`, the calling tool's
 `tool_call_id`, and any extra keyword fields at the top level (AG-UI's
-`Interrupt` allows them). The resume payload comes back unchanged in
+`Interrupt` allows them). Put what the UI needs in `metadata`, though:
+CopilotKit's runtime relays only the protocol's own interrupt fields, so extra
+top-level ones never reach the browser. The resume payload comes back unchanged in
 `answer.payload`. `answer.status` is `"resolved"`, `"cancelled"` (the user
 declined) or `"abandoned"` (the user sent a new message instead); tell the model
 which, so it does not report a decline that never happened. As with
