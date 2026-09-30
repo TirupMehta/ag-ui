@@ -20,10 +20,19 @@ import uvicorn
 from ag_ui_antigravity import create_antigravity_app
 
 from .api import (
+    a2ui_advanced,
+    a2ui_dynamic_schema,
+    a2ui_fixed_schema,
+    a2ui_recovery,
     agentic_chat,
+    agentic_chat_multimodal,
+    agentic_chat_reasoning,
+    agentic_generative_ui,
     backend_tool_rendering,
     human_in_the_loop,
+    interrupt,
     shared_state,
+    subgraphs,
     tool_based_generative_ui,
 )
 from .api._common import WORKSPACE
@@ -35,6 +44,15 @@ AGENTS = {
     "tool_based_generative_ui": tool_based_generative_ui.agent,
     "backend_tool_rendering": backend_tool_rendering.agent,
     "shared_state": shared_state.agent,
+    "agentic_chat_multimodal": agentic_chat_multimodal.agent,
+    "agentic_chat_reasoning": agentic_chat_reasoning.agent,
+    "agentic_generative_ui": agentic_generative_ui.agent,
+    "a2ui_fixed_schema": a2ui_fixed_schema.agent,
+    "a2ui_dynamic_schema": a2ui_dynamic_schema.agent,
+    "a2ui_advanced": a2ui_advanced.agent,
+    "a2ui_recovery": a2ui_recovery.agent,
+    "interrupt": interrupt.agent,
+    "subgraphs": subgraphs.agent,
 }
 
 app = create_antigravity_app(AGENTS)
