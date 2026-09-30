@@ -69,10 +69,11 @@ logger = logging.getLogger(__name__)
 KIND_FRONTEND_TOOL = "frontend_tool"
 KIND_QUESTION = "question"
 KIND_APPROVAL = "approval"
+KIND_TOOL_INTERRUPT = "tool_interrupt"
 # The kinds surfaced to the client as an AG-UI interrupt, and so the only ones
 # an interrupt answer may resolve. A frontend tool shares the registry but is
 # answered by a ToolMessage carrying its tool_call_id.
-_INTERRUPT_KINDS = frozenset({KIND_QUESTION, KIND_APPROVAL})
+_INTERRUPT_KINDS = frozenset({KIND_QUESTION, KIND_APPROVAL, KIND_TOOL_INTERRUPT})
 
 # Handed to a parked tool/hook when the user moves on instead of answering.
 # Distinct from _CANCELLED: the user did not decline, they changed direction,
@@ -88,6 +89,13 @@ _ABANDONED = (
 # put into the tool's schema.
 _CURRENT_BRIDGE: ContextVar[Optional["UIBridge"]] = ContextVar(
     "ag_ui_antigravity_bridge", default=None
+)
+
+
+# The AG-UI tool_call_id of the server tool that is running, so an interrupt it
+# raises can name the call it belongs to. None inside silent tools.
+_CURRENT_TOOL_CALL_ID: ContextVar[Optional[str]] = ContextVar(
+    "ag_ui_antigravity_tool_call_id", default=None
 )
 
 
@@ -128,6 +136,64 @@ def set_state(state: Dict[str, Any]) -> None:
     while the turn is still running.
     """
     _current_bridge("set_state").replace_state(state)
+
+
+@dataclass(frozen=True)
+class InterruptAnswer:
+    """What the client did with an interrupt a server tool raised.
+
+    ``status`` is ``"resolved"`` (``payload`` holds the resume payload, as the
+    client sent it), ``"cancelled"`` (the user declined), or ``"abandoned"``
+    (the user sent a new message instead of answering).
+    """
+
+    status: str
+    payload: Any = None
+
+    @property
+    def resolved(self) -> bool:
+        return self.status == "resolved"
+
+
+async def interrupt(
+    reason: str,
+    *,
+    message: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    **extra: Any,
+) -> InterruptAnswer:
+    """Pauses the calling server tool on an AG-UI interrupt until the user answers.
+
+    The run ends with ``RUN_FINISHED`` carrying an interrupt outcome whose
+    interrupt has this ``reason``, ``message`` and ``metadata`` (plus any extra
+    fields, which AG-UI's ``Interrupt`` allows at the top level). A later run
+    answers it with a ``RunAgentInput.resume`` entry; its payload comes back
+    unchanged. The tool keeps running from here, inside the same harness turn.
+
+    Call it from a server tool, as with ``get_state()``.
+    """
+    bridge = _current_bridge("interrupt")
+    interrupt_id = str(uuid.uuid4())
+    request = PendingRequest(
+        id=interrupt_id,
+        kind=KIND_TOOL_INTERRUPT,
+        future=asyncio.get_running_loop().create_future(),
+        interrupt=Interrupt(
+            id=interrupt_id,
+            reason=reason,
+            message=message,
+            metadata=metadata,
+            tool_call_id=_CURRENT_TOOL_CALL_ID.get(),
+            **extra,
+        ),
+    )
+    logger.debug("Parking server-tool interrupt %s (%s)", interrupt_id, reason)
+    value = await bridge._park(request)
+    if value is _CANCELLED:
+        return InterruptAnswer(status="cancelled")
+    if isinstance(value, str) and value == _ABANDONED:
+        return InterruptAnswer(status="abandoned")
+    return InterruptAnswer(status="resolved", payload=value)
 
 
 @dataclass
@@ -443,6 +509,7 @@ class UIBridge:
                 ToolCallEndEvent(type="TOOL_CALL_END", tool_call_id=tool_call_id)
             )
             token = _CURRENT_BRIDGE.set(bridge)
+            call_token = _CURRENT_TOOL_CALL_ID.set(tool_call_id)
             try:
                 result = tool(*args, **kwargs)
                 if is_async or inspect.isawaitable(result):
@@ -460,6 +527,7 @@ class UIBridge:
                 )
                 raise
             finally:
+                _CURRENT_TOOL_CALL_ID.reset(call_token)
                 _CURRENT_BRIDGE.reset(token)
             bridge.emit(
                 ToolCallResultEvent(

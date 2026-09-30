@@ -934,3 +934,71 @@ class TestContext:
         assert await wrapped() == {"x": 1}
         assert bridge.drain() == []
 
+
+
+class TestServerToolInterrupt:
+    """interrupt(): a server tool pausing on an AG-UI interrupt of its own."""
+
+    def _tool(self):
+        from ag_ui_antigravity import interrupt
+
+        async def schedule_meeting(topic: str) -> str:
+            """Books a meeting once the user picks a time."""
+            answer = await interrupt(
+                "schedule_meeting",
+                message="Pick a time",
+                metadata={"topic": topic},
+                options=["10:00", "14:00"],
+            )
+            if not answer.resolved:
+                return f"not booked ({answer.status})"
+            return f"booked at {answer.payload['time']}"
+
+        return schedule_meeting
+
+    async def _park(self, bridge):
+        (wrapped,) = bridge.build_server_tools([self._tool()])
+        task = asyncio.ensure_future(wrapped(topic="pricing"))
+        for _ in range(100):
+            if bridge.pending_interrupts():
+                break
+            await asyncio.sleep(0.01)
+        (pending,) = bridge.pending_interrupts()
+        return task, pending
+
+    async def test_the_tool_parks_on_an_interrupt_carrying_its_fields(self):
+        bridge = UIBridge()
+        task, pending = await self._park(bridge)
+        assert pending.reason == "schedule_meeting"
+        assert pending.message == "Pick a time"
+        assert pending.metadata == {"topic": "pricing"}
+        dumped = pending.model_dump(by_alias=True, exclude_none=True)
+        assert dumped["options"] == ["10:00", "14:00"]
+        start = next(e for e in bridge.drain() if e.type == "TOOL_CALL_START")
+        assert pending.tool_call_id == start.tool_call_id
+        assert not task.done()
+        task.cancel()
+
+    async def test_the_resume_payload_reaches_the_tool_unchanged(self):
+        bridge = UIBridge()
+        task, pending = await self._park(bridge)
+        assert bridge.resolve_interrupt(pending.id, {"time": "10:00"}, cancelled=False)
+        assert await task == "booked at 10:00"
+
+    async def test_a_cancelled_interrupt_is_reported_as_cancelled(self):
+        bridge = UIBridge()
+        task, pending = await self._park(bridge)
+        assert bridge.resolve_interrupt(pending.id, None, cancelled=True)
+        assert await task == "not booked (cancelled)"
+
+    async def test_moving_on_is_reported_as_abandoned_not_cancelled(self):
+        bridge = UIBridge()
+        task, _ = await self._park(bridge)
+        bridge.abandon_pending()
+        assert await task == "not booked (abandoned)"
+
+    async def test_interrupt_outside_a_server_tool_raises(self):
+        from ag_ui_antigravity import interrupt
+
+        with pytest.raises(RuntimeError, match="interrupt"):
+            await interrupt("nope")

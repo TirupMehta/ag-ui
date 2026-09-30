@@ -180,6 +180,35 @@ hand the model the user's reply as the tool's return value. Supporting only
 `resume` left a channel-driven approval parked forever, which looks like a bot
 that has silently gone quiet.
 
+### Interrupts from your own tools
+
+A server tool can pause itself on an interrupt of its own design with
+`interrupt()`, then carry on with the user's answer:
+
+```python
+from ag_ui_antigravity import interrupt
+
+async def schedule_meeting(topic: str, attendee: str) -> str:
+    """Books a meeting once the user picks a time."""
+    answer = await interrupt(
+        "schedule_meeting",
+        message=f"Pick a time for {topic}",
+        metadata={"topic": topic, "attendee": attendee},
+    )
+    if not answer.resolved:
+        return f"Not scheduled ({answer.status})."
+    return f"Scheduled for {answer.payload['chosen_label']}."
+```
+
+The run ends with `RUN_FINISHED` carrying an interrupt outcome whose interrupt
+has that `reason`, `message` and `metadata`, the calling tool's
+`tool_call_id`, and any extra keyword fields at the top level (AG-UI's
+`Interrupt` allows them). The resume payload comes back unchanged in
+`answer.payload`. `answer.status` is `"resolved"`, `"cancelled"` (the user
+declined) or `"abandoned"` (the user sent a new message instead); tell the model
+which, so it does not report a decline that never happened. As with
+`get_state()`, it only works inside a server tool.
+
 ### One turn, several runs
 
 An Antigravity *turn* that parks on a human spans several AG-UI *runs*, and on

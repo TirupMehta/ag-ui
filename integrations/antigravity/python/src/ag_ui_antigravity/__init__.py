@@ -8,7 +8,14 @@ from .session_manager import (
     SessionLimitExceeded,
     SessionManager,
 )
-from .ui_bridge import UIBridge, get_context, get_state, set_state
+from .ui_bridge import (
+    InterruptAnswer,
+    UIBridge,
+    get_context,
+    get_state,
+    interrupt,
+    set_state,
+)
 
 __all__ = [
     "AntigravityAgent",
@@ -19,7 +26,9 @@ __all__ = [
     "UIBridge",
     "add_antigravity_fastapi_endpoint",
     "create_antigravity_app",
+    "InterruptAnswer",
     "get_context",
+    "interrupt",
     "get_state",
     "set_state",
 ]
