@@ -5,6 +5,7 @@ import {
 } from "@copilotkit/aimock";
 import * as path from "node:path";
 import { registerA2UIRecoveryFixtures } from "./a2ui-recovery-fixtures";
+import { registerAntigravityFixtures } from "./antigravity-fixtures";
 import { registerA2UIADKFixtures } from "./a2ui-adk-fixtures";
 import {
   crewAIA2UIAnswersToolResultTurn,
@@ -65,6 +66,10 @@ export async function setupLLMock(): Promise<void> {
 
 // Shared by the server and registration-precedence regression tests.
 export function registerLLMockFixtures(mockServer: LLMock): void {
+  // Antigravity's harness never sends role:"tool", so its legs are staged on
+  // turnIndex and scoped to its own context; first, so they outrank the
+  // shared fixtures that match the same prompts.
+  registerAntigravityFixtures(mockServer);
   // OSS-158 ADK A2UI fixtures (Gemini-shaped, scoped to gemini models). MUST
   // precede the OpenAI LangGraph recovery fixtures so a Gemini request matches
   // here first; gpt-4o requests fall through to the LangGraph fixtures.
